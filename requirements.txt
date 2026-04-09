@@ -1,0 +1,15 @@
+# Runtime dependencies for the main FastAPI + satellite tracking app.
+# The bundled `starlink-grpc-tools/` directory keeps its own separate
+# requirements file for optional helper scripts.
+
+fastapi==0.135.2
+uvicorn[standard]==0.42.0
+sgp4==2.25
+
+# Starlink gRPC access used by `starlink_grpc.py` and the backend collector.
+grpcio>=1.12.0
+protobuf>=3.6.0
+typing-extensions>=4.3.0
+
+# Optional CLI dependency used by `link.py`.
+rich>=13.0.0

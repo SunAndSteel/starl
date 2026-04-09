@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Starlink Monitor</title>
+    <style>
+        :root {
+            --bg: #071019;
+            --panel: rgba(10, 24, 36, 0.88);
+            --panel-border: rgba(155, 197, 219, 0.16);
+            --text: #ecf6fb;
+            --muted: #8ca6b5;
+            --accent: #69d2f2;
+            --accent-soft: rgba(105, 210, 242, 0.18);
+            --warning: #f19a57;
+            --danger: #e06552;
+            --success: #77d08a;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at top, rgba(52, 110, 133, 0.34), transparent 40%),
+                linear-gradient(180deg, #08131d 0%, #04090f 100%);
+            color: var(--text);
+            font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(320px, 380px) 1fr;
+            gap: 20px;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 18px;
+            backdrop-filter: blur(16px);
+            box-shadow: 0 20px 45px rgba(0, 0, 0, 0.25);
+        }
+
+        .sidebar {
+            display: grid;
+            gap: 16px;
+            align-content: start;
+        }
+
+        .section {
+            padding: 18px;
+        }
+
+        .title {
+            margin: 0 0 8px;
+            font-size: 1.55rem;
+            letter-spacing: 0.03em;
+        }
+
+        .subtitle,
+        .hint,
+        .status-line {
+            color: var(--muted);
+            margin: 0;
+            line-height: 1.5;
+        }
+
+        .controls {
+            display: grid;
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .toggle label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            cursor: pointer;
+            color: var(--text);
+        }
+
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent);
+        }
+
+        .button-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        button,
+        select {
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text);
+            padding: 11px 12px;
+            font: inherit;
+        }
+
+        button {
+            cursor: pointer;
+            transition: transform 120ms ease, background 120ms ease;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .metrics,
+        .cluster-list,
+        .sat-list {
+            display: grid;
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .metric {
+            padding: 12px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .metric .label {
+            display: block;
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-bottom: 5px;
+        }
+
+        .metric .value {
+            font-size: 1.05rem;
+            font-weight: 600;
+        }
+
+        .main {
+            position: relative;
+            overflow: hidden;
+        }
+
+        canvas {
+            width: 100%;
+            height: calc(100vh - 40px);
+            display: block;
+            border-radius: 18px;
+        }
+
+        .hud {
+            position: absolute;
+            left: 18px;
+            right: 18px;
+            bottom: 18px;
+            display: flex;
+            justify-content: space-between;
+            gap: 14px;
+            pointer-events: none;
+        }
+
+        .hud-card {
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: rgba(8, 17, 28, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            max-width: 320px;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 0.82rem;
+            margin-top: 10px;
+        }
+
+        .warning {
+            color: var(--warning);
+        }
+
+        .danger {
+            color: var(--danger);
+        }
+
+        .success {
+            color: var(--success);
+        }
+
+        @media (max-width: 1024px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+
+            canvas {
+                height: 70vh;
+            }
+
+            .button-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <section class="panel section">
+                <h1 class="title">Starlink Sky Monitor</h1>
+                <p class="subtitle">Persistent obstruction analysis, passive track inference, and live TLE overlays in a single fisheye view.</p>
+                <div class="pill" id="connection-pill">Waiting for telemetry</div>
+            </section>
+
+            <section class="panel section">
+                <h2 class="title" style="font-size: 1.1rem;">Layers</h2>
+                <div class="controls" id="layer-controls">
+                    <div class="toggle"><label><input type="checkbox" data-layer="average" checked>Average map</label></div>
+                    <div class="toggle"><label><input type="checkbox" data-layer="current">Current map</label></div>
+                    <div class="toggle"><label><input type="checkbox" data-layer="mask" checked>Persistent obstruction mask</label></div>
+                    <div class="toggle"><label><input type="checkbox" data-layer="tracks" checked>Satellite tracks</label></div>
+                    <div class="toggle"><label><input type="checkbox" data-layer="satellites" checked>Live satellites</label></div>
+                    <div class="toggle"><label><input type="checkbox" data-layer="dish" checked>Dish direction vector</label></div>
+                    <div class="toggle"><label><input type="checkbox" data-layer="clusters" checked>Cluster highlights</label></div>
+                </div>
+                <div class="button-row">
+                    <button id="reset-button" type="button">Reset Maps</button>
+                    <button id="export-button" type="button">Export PNG</button>
+                    <button id="refresh-tle-button" type="button">Refresh TLE</button>
+                </div>
+                <div style="margin-top: 12px;">
+                    <select id="export-layer">
+                        <option value="average">Export average map</option>
+                        <option value="current">Export current map</option>
+                        <option value="mask">Export obstruction mask</option>
+                        <option value="tracks">Export satellite tracks</option>
+                    </select>
+                </div>
+            </section>
+
+            <section class="panel section">
+                <h2 class="title" style="font-size: 1.1rem;">Live Metrics</h2>
+                <div class="metric-grid" id="metric-grid"></div>
+                <p class="hint" id="observer-line">Observer location unavailable</p>
+            </section>
+
+            <section class="panel section">
+                <h2 class="title" style="font-size: 1.1rem;">Persistent Obstructions</h2>
+                <p class="status-line" id="cluster-summary">No stable obstruction clusters detected yet.</p>
+                <div class="cluster-list" id="cluster-list"></div>
+            </section>
+
+            <section class="panel section">
+                <h2 class="title" style="font-size: 1.1rem;">Satellite Tracking</h2>
+                <p class="status-line" id="tracking-summary">Waiting for enough history to infer tracks.</p>
+                <div class="sat-list" id="satellite-list"></div>
+            </section>
+        </aside>
+
+        <main class="panel main">
+            <canvas id="sky-canvas"></canvas>
+            <div class="hud">
+                <div class="hud-card">
+                    <strong>Projection</strong>
+                    <p class="hint">Zenith in the center, horizon at the edge. Green indicates strong signal, red indicates stable obstruction.</p>
+                </div>
+                <div class="hud-card">
+                    <strong>TLE Status</strong>
+                    <p class="hint" id="tle-status">No TLE catalog loaded.</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

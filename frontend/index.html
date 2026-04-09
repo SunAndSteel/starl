@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Starlink Monitor</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Starlink Telemetry</p>
+          <h1>Real-time throughput and bufferbloat monitoring</h1>
+          <p class="lede">FastAPI streams telemetry through one WebSocket, while regl renders the dashboard directly on the GPU.</p>
+        </div>
+        <div class="connection-card">
+          <span id="connection-pill" class="pill pill-warn">Connecting</span>
+          <p id="connection-detail" class="muted">Waiting for the first telemetry frame.</p>
+          <div class="connection-actions">
+            <span id="render-mode-label" class="render-mode-label">Render: WebGL</span>
+            <button id="render-mode-toggle" class="ghost-button" type="button">Use Fallback</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="sky-card">
+        <div class="sky-header">
+          <div>
+            <p class="eyebrow">Sky View</p>
+            <h2>Obstructions, tracks, and live satellites</h2>
+          </div>
+          <div class="sky-actions">
+            <input id="observer-latitude" class="observer-input" type="text" inputmode="decimal" spellcheck="false" placeholder="Latitude" />
+            <input id="observer-longitude" class="observer-input" type="text" inputmode="decimal" spellcheck="false" placeholder="Longitude" />
+            <input id="observer-altitude" class="observer-input observer-input-altitude" type="text" inputmode="decimal" spellcheck="false" placeholder="Altitude m" />
+            <button id="observer-save-button" class="ghost-button" type="button">Set Observer</button>
+            <button id="export-button" class="ghost-button" type="button">Export PNG</button>
+            <button id="reset-button" class="ghost-button" type="button">Reset Map</button>
+            <button id="tle-refresh-button" class="ghost-button" type="button">Refresh TLE</button>
+            <button id="sky-camera-reset" class="ghost-button" type="button">Reset View</button>
+          </div>
+        </div>
+
+        <div class="sky-controls">
+          <label class="layer-pill"><input id="layer-current" type="checkbox" checked /> Current</label>
+          <label class="layer-pill"><input id="layer-average" type="checkbox" checked /> Average</label>
+          <label class="layer-pill"><input id="layer-mask" type="checkbox" checked /> Persistent Mask</label>
+          <label class="layer-pill"><input id="layer-tracks" type="checkbox" checked /> Tracks</label>
+          <label class="layer-pill"><input id="layer-live" type="checkbox" checked /> Live Satellites</label>
+          <label class="layer-pill"><input id="layer-dish" type="checkbox" checked /> Dish Vector</label>
+          <label class="layer-pill"><input id="layer-clusters" type="checkbox" checked /> Clusters</label>
+        </div>
+
+        <div class="sky-stage">
+          <canvas id="sky-scene"></canvas>
+        </div>
+
+        <div class="sky-footer">
+          <div id="sky-status" class="sky-meta"></div>
+          <div id="sky-clusters" class="sky-meta sky-meta-right"></div>
+        </div>
+      </section>
+
+      <section class="dashboard-shell">
+        <section class="viewport-card">
+          <canvas id="scene"></canvas>
+          <div id="throughput-overlay" class="panel-overlay panel-overlay-throughput"></div>
+          <div id="bufferbloat-overlay" class="panel-overlay panel-overlay-bufferbloat"></div>
+          <div id="throughput-annotations" class="panel-annotations panel-annotations-throughput"></div>
+          <div id="bufferbloat-annotations" class="panel-annotations panel-annotations-bufferbloat"></div>
+          <div id="throughput-caption" class="panel-caption panel-caption-throughput">Optimal Throughput</div>
+          <div id="bufferbloat-caption" class="panel-caption panel-caption-bufferbloat">Bufferbloat Curve</div>
+        </section>
+
+        <aside class="sidebar">
+          <section class="sidebar-card">
+            <h2>Live Status</h2>
+            <div id="status-grid" class="metric-grid"></div>
+          </section>
+
+          <section class="sidebar-card">
+            <h2>Throughput Model</h2>
+            <div id="throughput-details" class="detail-list"></div>
+          </section>
+
+          <section class="sidebar-card">
+            <h2>Latest Alerts</h2>
+            <div id="alerts-list" class="detail-list muted">No active alerts</div>
+          </section>
+        </aside>
+      </section>
+    </div>
+  </body>
+</html>

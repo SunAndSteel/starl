@@ -1,0 +1,41 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Logs and local env files
+*.log
+.env
+.env.*
+
+# Frontend dependencies and local caches
+frontend/node_modules/
+frontend/.vite/
+
+# Generic JS package manager caches
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build note:
+# `frontend/dist` is intentionally NOT ignored because this project's FastAPI
+# app can serve the built frontend from that directory and the current repo
+# already tracks those files.
