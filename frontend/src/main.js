@@ -296,42 +296,16 @@ function isGridCellInsideProjection(x, y, projection) {
   return ((dx * dx) + (dy * dy)) <= 1;
 }
 
-function createGridCellProjector(projection, dish) {
-  const dishAzimuth = Number(dish?.azimuth);
-  const dishElevation = Number(dish?.elevation);
-  const halfAngleDeg = Number(dish?.fov_half_angle_deg ?? 55);
-  const hasDishPose = Number.isFinite(dishAzimuth) && Number.isFinite(dishElevation) && Number.isFinite(halfAngleDeg);
-  const dishVector = hasDishPose ? azelToXYZ(dishAzimuth, dishElevation) : null;
-  const basis = hasDishPose ? buildPerpendicularBasis(dishVector) : null;
-  const halfAngleRad = hasDishPose ? (halfAngleDeg * Math.PI / 180) : 0;
-
-  return (x, y) => {
-    const radialX = ((x + 0.5) - projection.centerX) / projection.radius;
-    const radialY = (projection.centerY - (y + 0.5)) / projection.radius;
-    const radial = Math.hypot(radialX, radialY);
-    if (radial > 1) {
-      return null;
-    }
-
-    if (!hasDishPose) {
-      const { azimuth, elevation } = gridCellToAzEl(x, y, projection);
-      return azelToXYZ(azimuth, elevation);
-    }
-
-    const phi = Math.atan2(radialX, radialY);
-    const theta = radial * halfAngleRad;
-    const cosTheta = Math.cos(theta);
-    const sinTheta = Math.sin(theta);
-    const radialBasis = [
-      Math.cos(phi) * basis.u[0] + Math.sin(phi) * basis.v[0],
-      Math.cos(phi) * basis.u[1] + Math.sin(phi) * basis.v[1],
-      Math.cos(phi) * basis.u[2] + Math.sin(phi) * basis.v[2],
-    ];
-    return normalizeVec3([
-      (dishVector[0] * cosTheta) + (radialBasis[0] * sinTheta),
-      (dishVector[1] * cosTheta) + (radialBasis[1] * sinTheta),
-      (dishVector[2] * cosTheta) + (radialBasis[2] * sinTheta),
-    ]);
+function createDishFovFilter(dish) {
+  if (!Number.isFinite(dish?.azimuth) || !Number.isFinite(dish?.elevation)) {
+    return null;
+  }
+  const halfAngle = Number(dish?.fov_half_angle_deg ?? 55);
+  const cosHalf = Math.cos((halfAngle * Math.PI) / 180);
+  const dishVec = azelToXYZ(dish.azimuth, dish.elevation);
+  return (azimuth, elevation) => {
+    const sampleVec = azelToXYZ(azimuth, elevation);
+    return ((sampleVec[0] * dishVec[0]) + (sampleVec[1] * dishVec[1]) + (sampleVec[2] * dishVec[2])) > cosHalf;
   };
 }
 
@@ -717,7 +691,7 @@ function satelliteAnimationActive(now = Date.now()) {
   return false;
 }
 
-function buildGridPointLayer(grid, width, height, projection, projectCellVector, radius, size, alphaFor) {
+function buildGridPointLayer(grid, width, height, projection, radius, size, alphaFor, inFov = null) {
   if (!grid?.length || !width || !height) {
     return EMPTY_FLOAT32;
   }
@@ -733,11 +707,11 @@ function buildGridPointLayer(grid, width, height, projection, projectCellVector,
       if (!Number.isFinite(value) || value < 0) {
         continue;
       }
-      const vector = projectCellVector(x, y);
-      if (!vector) {
+      const { azimuth, elevation } = gridCellToAzEl(x, y, projection);
+      if (inFov && !inFov(azimuth, elevation)) {
         continue;
       }
-      const point = scaleVector(vector, radius);
+      const point = scaleVector(azelToXYZ(azimuth, elevation), radius);
       values.push(point[0], point[1], point[2], size, clamp(alphaFor(value), 0.015, 0.42));
     }
   }
@@ -745,7 +719,7 @@ function buildGridPointLayer(grid, width, height, projection, projectCellVector,
   return values.length ? new Float32Array(values) : EMPTY_FLOAT32;
 }
 
-function buildMaskPointLayer(mask, width, height, projection, projectCellVector, radius, size) {
+function buildMaskPointLayer(mask, width, height, projection, radius, size, inFov = null) {
   if (!mask?.length || !width || !height) {
     return EMPTY_FLOAT32;
   }
@@ -760,11 +734,11 @@ function buildMaskPointLayer(mask, width, height, projection, projectCellVector,
       if (!row[x]) {
         continue;
       }
-      const vector = projectCellVector(x, y);
-      if (!vector) {
+      const { azimuth, elevation } = gridCellToAzEl(x, y, projection);
+      if (inFov && !inFov(azimuth, elevation)) {
         continue;
       }
-      const point = scaleVector(vector, radius);
+      const point = scaleVector(azelToXYZ(azimuth, elevation), radius);
       values.push(point[0], point[1], point[2], size, 0.24);
     }
   }
@@ -875,32 +849,32 @@ function buildSkyScene(snapshot, projection, active, now) {
   const dish = sky.dish || {};
   const clusters = sky.persistent_obstructions?.clusters || [];
   const cellRadius = width && height ? clamp(920 / Math.max(width, height), 2.2, 7.5) : 4.5;
-  const projectCellVector = createGridCellProjector(projection, dish);
-  const satellites = active.live ? animatedLiveSatellites(now, sky.live_satellites) : [];
+  const inDishFov = createDishFovFilter(dish);
+  const satellites = active.live ? animatedLiveSatellites(now) : [];
 
   return {
     layers: [
       {
         points: active.average
-          ? buildGridPointLayer(layers.average, width, height, projection, projectCellVector, GRID_LAYER_RADII.average, cellRadius, (value) => 0.02 + (1 - value) * 0.22)
+          ? buildGridPointLayer(layers.average, width, height, projection, GRID_LAYER_RADII.average, cellRadius, (value) => 0.02 + (1 - value) * 0.22, inDishFov)
           : EMPTY_FLOAT32,
         color: [1, 1, 1],
       },
       {
         points: active.current
-          ? buildGridPointLayer(layers.current, width, height, projection, projectCellVector, GRID_LAYER_RADII.current, cellRadius, (value) => 0.03 + (1 - value) * 0.28)
+          ? buildGridPointLayer(layers.current, width, height, projection, GRID_LAYER_RADII.current, cellRadius, (value) => 0.03 + (1 - value) * 0.28, inDishFov)
           : EMPTY_FLOAT32,
         color: [1, 1, 1],
       },
       {
         points: active.mask
-          ? buildMaskPointLayer(layers.persistent_mask, width, height, projection, projectCellVector, GRID_LAYER_RADII.mask, cellRadius + 1)
+          ? buildMaskPointLayer(layers.persistent_mask, width, height, projection, GRID_LAYER_RADII.mask, cellRadius + 1, inDishFov)
           : EMPTY_FLOAT32,
         color: [1, 1, 1],
       },
       {
         points: active.tracks
-          ? buildGridPointLayer(layers.satellite_tracks, width, height, projection, projectCellVector, GRID_LAYER_RADII.tracks, Math.max(1.8, cellRadius * 0.64), (value) => 0.08 + value * 0.35)
+          ? buildGridPointLayer(layers.satellite_tracks, width, height, projection, GRID_LAYER_RADII.tracks, Math.max(1.8, cellRadius * 0.64), (value) => 0.08 + value * 0.35, inDishFov)
           : EMPTY_FLOAT32,
         color: [1, 1, 1],
       },
