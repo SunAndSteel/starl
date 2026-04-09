@@ -6,9 +6,11 @@ import { createSkyRenderer } from "./renderers/skyView.js";
 import { createSocketClient } from "./socket.js";
 import {
   azelToXYZ,
+  buildPerpendicularBasis,
   buildFovBoundaryVectors,
   clamp,
   gridCellToAzEl,
+  normalizeVec3,
   normalizeProjection,
   slerp,
   xyzToAzEl,
@@ -607,7 +609,35 @@ function findTrackIndex(track, nowSeconds) {
   return -1;
 }
 
-function animatedLiveSatellites(now = Date.now()) {
+function buildLiveSatelliteFallback(liveSatellites) {
+  if (!Array.isArray(liveSatellites) || !liveSatellites.length) {
+    return [];
+  }
+  const satellites = [];
+  liveSatellites.forEach((entry, index) => {
+    const azimuth = Number(entry?.azimuth);
+    const elevation = Number(entry?.elevation);
+    if (!Number.isFinite(azimuth) || !Number.isFinite(elevation)) {
+      return;
+    }
+    const quality = Number(entry?.beam_quality ?? entry?.quality);
+    satellites.push({
+      key: String(entry?.segment_id ?? `live-${index}`),
+      satId: String(entry?.sat_id ?? `live-${index}`),
+      name: String(entry?.name ?? entry?.sat_id ?? `SAT-${index + 1}`),
+      vector: azelToXYZ(azimuth, elevation),
+      azimuth,
+      elevation,
+      quality: Number.isFinite(quality) ? clamp(quality, 0, 1) : 0.5,
+      rawQuality: Number.isFinite(quality) ? quality : 0.5,
+      opacity: 1,
+    });
+  });
+  satellites.sort((left, right) => (right.quality - left.quality) || (right.elevation - left.elevation));
+  return satellites.slice(0, MAX_RENDERED_SATELLITES);
+}
+
+function animatedLiveSatellites(now = Date.now(), liveSatellites = null) {
   const satellites = [];
   const nowSeconds = now / 1000;
 
@@ -640,7 +670,11 @@ function animatedLiveSatellites(now = Date.now()) {
   }
 
   satellites.sort((left, right) => (right.quality - left.quality) || (right.elevation - left.elevation));
-  return satellites.slice(0, MAX_RENDERED_SATELLITES);
+  const interpolated = satellites.slice(0, MAX_RENDERED_SATELLITES);
+  if (interpolated.length) {
+    return interpolated;
+  }
+  return buildLiveSatelliteFallback(liveSatellites);
 }
 
 function satelliteAnimationActive(now = Date.now()) {
@@ -952,7 +986,7 @@ function renderSkyView(snapshot, now = Date.now()) {
     clusters: layerInputs.clusters.checked,
   };
 
-  const animatedSatellites = active.live ? animatedLiveSatellites(now) : [];
+  const animatedSatellites = active.live ? animatedLiveSatellites(now, liveSatellites) : [];
 
   skyCanvas.style.display = useSkyWebgl ? "block" : "none";
   if (useSkyWebgl) {
