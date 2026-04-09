@@ -1,7 +1,5 @@
 import "./styles.css";
 
-import { createDashboard } from "./renderers/dashboard.js";
-import { createPanelLayout } from "./renderers/layout.js";
 import { createSkyRenderer } from "./renderers/skyView.js";
 import { createSocketClient } from "./socket.js";
 import {
@@ -16,12 +14,11 @@ import {
   xyzToAzEl,
 } from "./skyMath.js";
 
-const canvas = document.getElementById("scene");
 const skyCanvas = document.getElementById("sky-scene");
+const skyStage = document.querySelector(".sky-stage");
 const skyStatus = document.getElementById("sky-status");
 const skyClusters = document.getElementById("sky-clusters");
 const exportButton = document.getElementById("export-button");
-const resetButton = document.getElementById("reset-button");
 const tleRefreshButton = document.getElementById("tle-refresh-button");
 const skyCameraResetButton = document.getElementById("sky-camera-reset");
 const observerLatitudeInput = document.getElementById("observer-latitude");
@@ -29,46 +26,25 @@ const observerLongitudeInput = document.getElementById("observer-longitude");
 const observerAltitudeInput = document.getElementById("observer-altitude");
 const observerSaveButton = document.getElementById("observer-save-button");
 const observerInputs = [observerLatitudeInput, observerLongitudeInput, observerAltitudeInput];
-const MAX_RENDERED_SATELLITES = 24;
+const skyCardinals = {
+  N: document.getElementById("sky-cardinal-n"),
+  S: document.getElementById("sky-cardinal-s"),
+  E: document.getElementById("sky-cardinal-e"),
+  O: document.getElementById("sky-cardinal-o"),
+};
+const MAX_RENDERED_SATELLITES = 100;
 const SEGMENT_RETENTION_MS = 1200;
 const EMPTY_FLOAT32 = new Float32Array(0);
 const SKY_WORLD_RADIUS = 1.0;
 const GRID_LAYER_RADII = {
-  average: SKY_WORLD_RADIUS + 0.01,
-  current: SKY_WORLD_RADIUS + 0.018,
-  mask: SKY_WORLD_RADIUS + 0.026,
-  tracks: SKY_WORLD_RADIUS + 0.034,
-  clusters: SKY_WORLD_RADIUS + 0.05,
-  fov: SKY_WORLD_RADIUS + 0.038,
+  obstruction: SKY_WORLD_RADIUS + 0.03,
+  fov: SKY_WORLD_RADIUS + 0.036,
   satellites: SKY_WORLD_RADIUS + 0.058,
 };
 const DISH_AXIS_RADIUS = SKY_WORLD_RADIUS + 0.18;
-
-function createFallbackRenderer(surface) {
-  return {
-    render() {},
-    layout() {
-      return createPanelLayout(surface.clientWidth, surface.clientHeight);
-    },
-    destroy() {},
-  };
-}
-
-let renderer = null;
-let rendererSupportsWebgl = true;
-let initialRenderError = "";
 let skyRenderer = null;
 let skyRendererSupportsWebgl = true;
 let initialSkyRenderError = "";
-
-try {
-  renderer = createDashboard(canvas);
-} catch (error) {
-  console.error("WebGL renderer initialization failed, using fallback overlay.", error);
-  rendererSupportsWebgl = false;
-  initialRenderError = error?.message || "WebGL renderer initialization failed.";
-  renderer = createFallbackRenderer(canvas);
-}
 
 try {
   skyRenderer = createSkyRenderer(skyCanvas);
@@ -80,10 +56,8 @@ try {
 
 const state = {
   snapshot: null,
-  dirty: true,
-  renderMode: rendererSupportsWebgl ? "webgl" : "fallback",
-  renderError: initialRenderError,
-  rendererSupportsWebgl,
+  connectionState: "connecting",
+  connectionDetail: "En attente des trames du backend.",
   observerSaving: false,
   manualObserverDraft: null,
   skyRendererSupportsWebgl,
@@ -91,29 +65,12 @@ const state = {
   satelliteSegments: new Map(),
 };
 
-const pill = document.getElementById("connection-pill");
-const connectionDetail = document.getElementById("connection-detail");
-const renderModeLabel = document.getElementById("render-mode-label");
-const renderModeToggle = document.getElementById("render-mode-toggle");
 const statusGrid = document.getElementById("status-grid");
-const throughputDetails = document.getElementById("throughput-details");
-const alertsList = document.getElementById("alerts-list");
-const throughputAnnotations = document.getElementById("throughput-annotations");
-const bufferbloatAnnotations = document.getElementById("bufferbloat-annotations");
-const throughputCaption = document.getElementById("throughput-caption");
-const bufferbloatCaption = document.getElementById("bufferbloat-caption");
-const throughputOverlay = document.getElementById("throughput-overlay");
-const bufferbloatOverlay = document.getElementById("bufferbloat-overlay");
-const overlayElements = [throughputOverlay, bufferbloatOverlay];
 
 const layerInputs = {
-  current: document.getElementById("layer-current"),
-  average: document.getElementById("layer-average"),
   mask: document.getElementById("layer-mask"),
-  tracks: document.getElementById("layer-tracks"),
   live: document.getElementById("layer-live"),
   dish: document.getElementById("layer-dish"),
-  clusters: document.getElementById("layer-clusters"),
 };
 
 const wsUrl = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
@@ -133,10 +90,6 @@ const skyDebugState = {
   lastSegmentSignature: "",
 };
 
-function requestRender() {
-  state.dirty = true;
-}
-
 function skyDebugLog(event, details = {}) {
   if (!skyDebugEnabled) {
     return;
@@ -145,7 +98,6 @@ function skyDebugLog(event, details = {}) {
 }
 
 skyDebugLog("enabled", {
-  dashboardWebgl: rendererSupportsWebgl,
   skyWebgl: skyRendererSupportsWebgl,
   query: window.location.search,
 });
@@ -168,35 +120,9 @@ function escapeHtml(value) {
   ));
 }
 
-function applyRenderMode() {
-  const usingFallback = state.renderMode === "fallback";
-  const webglAvailable = state.rendererSupportsWebgl;
-  const showDashboardFallback = usingFallback || !state.rendererSupportsWebgl;
-  for (const element of overlayElements) {
-    element.classList.toggle("panel-overlay-visible", showDashboardFallback);
-  }
-
-  if (!webglAvailable) {
-    renderModeLabel.textContent = "Render: Fallback only";
-    renderModeToggle.textContent = "Fallback only";
-    renderModeToggle.disabled = true;
-    renderModeToggle.title = state.renderError || "WebGL is unavailable in this session.";
-    return;
-  }
-
-  renderModeLabel.textContent = usingFallback ? "Render: Fallback" : "Render: WebGL";
-  renderModeToggle.textContent = usingFallback ? "Use WebGL" : "Use Fallback";
-  renderModeToggle.disabled = false;
-  if (state.renderError) {
-    renderModeToggle.title = state.renderError;
-  } else {
-    renderModeToggle.removeAttribute("title");
-  }
-}
-
 function formatBps(value) {
   if (!Number.isFinite(value)) {
-    return "n/a";
+    return "n/d";
   }
   if (value >= 1e9) {
     return `${(value / 1e9).toFixed(2)} Gbps`;
@@ -211,16 +137,16 @@ function formatBps(value) {
 }
 
 function formatMs(value) {
-  return Number.isFinite(value) ? `${value.toFixed(1)} ms` : "n/a";
+  return Number.isFinite(value) ? `${value.toFixed(1)} ms` : "n/d";
 }
 
 function formatPct(value) {
-  return Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "n/a";
+  return Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "n/d";
 }
 
 function formatUptime(seconds) {
   if (!Number.isFinite(seconds)) {
-    return "n/a";
+    return "n/d";
   }
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -237,45 +163,37 @@ function metricCard(label, value) {
   `;
 }
 
-function detailRow(label, value) {
-  return `
-    <div class="detail-row">
-      <strong>${label}</strong>
-      <span>${value}</span>
-    </div>
-  `;
-}
-
 function renderSidebar(snapshot) {
   const status = snapshot?.status || {};
-  const throughput = snapshot?.throughput || {};
-  const autorate = throughput.autorate || {};
   const meta = snapshot?.meta || {};
 
   statusGrid.innerHTML = [
-    metricCard("State", status.state || "Unknown"),
-    metricCard("Latency", formatMs(status.latency_ms)),
-    metricCard("Drop", formatPct(status.drop_rate)),
-    metricCard("Downlink", formatBps(status.downlink_bps)),
-    metricCard("Uplink", formatBps(status.uplink_bps)),
+    metricCard("Etat", status.state || "Inconnu"),
+    metricCard("Latence", formatMs(status.latency_ms)),
+    metricCard("Perte", formatPct(status.drop_rate)),
+    metricCard("Descendant", formatBps(status.downlink_bps)),
+    metricCard("Montant", formatBps(status.uplink_bps)),
     metricCard("Uptime", formatUptime(status.uptime_s)),
-    metricCard("Samples", `${meta.sample_count || 0}`),
-    metricCard("Worker", meta.worker_error ? "Error" : "OK"),
+    metricCard("Echantillons", `${meta.sample_count || 0}`),
+    metricCard("Service", meta.worker_error ? "Erreur" : "OK"),
   ].join("");
+}
 
-  throughputDetails.innerHTML = [
-    detailRow("Optimal downlink", formatBps(throughput.optimal?.downlink_bps || 0)),
-    detailRow("Optimal uplink", formatBps(throughput.optimal?.uplink_bps || 0)),
-    detailRow("Confidence", `${Math.round((throughput.confidence || 0) * 100)}% from ${throughput.valid_sample_count || 0} valid samples`),
-    detailRow("Autorate phase", `${autorate.phase || "INIT"} — ${autorate.reason || "n/a"}`),
-    meta.worker_error ? detailRow("Worker error", meta.worker_error) : "",
-  ].join("");
-
-  const alerts = snapshot?.alerts || {};
-  const active = Object.entries(alerts).filter(([, value]) => value);
-  alertsList.innerHTML = active.length
-    ? active.slice(0, 6).map(([name]) => detailRow(name.replace(/^alert_/, "").replaceAll("_", " "), "active")).join("")
-    : '<div class="detail-row muted">No active alerts</div>';
+function formatObserverSource(source) {
+  if (!source) {
+    return "observateur";
+  }
+  return (
+    {
+      manual: "manuel",
+      config: "config",
+      grpc: "grpc",
+      gps: "gps",
+      api: "api",
+      observer: "observateur",
+    }[source]
+    || source
+  );
 }
 
 function lerp(start, end, alpha) {
@@ -288,6 +206,259 @@ function scaleVector(vector, radius) {
     vector[1] * radius,
     vector[2] * radius,
   ];
+}
+
+function multiplyMat4Vec4(matrix, vector) {
+  return [
+    (matrix[0] * vector[0]) + (matrix[4] * vector[1]) + (matrix[8] * vector[2]) + (matrix[12] * vector[3]),
+    (matrix[1] * vector[0]) + (matrix[5] * vector[1]) + (matrix[9] * vector[2]) + (matrix[13] * vector[3]),
+    (matrix[2] * vector[0]) + (matrix[6] * vector[1]) + (matrix[10] * vector[2]) + (matrix[14] * vector[3]),
+    (matrix[3] * vector[0]) + (matrix[7] * vector[1]) + (matrix[11] * vector[2]) + (matrix[15] * vector[3]),
+  ];
+}
+
+function projectWorldPointToStage(vector, cameraState, stageWidth, stageHeight) {
+  if (!cameraState?.viewMatrix || !cameraState?.projectionMatrix) {
+    return null;
+  }
+
+  const viewPosition = multiplyMat4Vec4(cameraState.viewMatrix, [vector[0], vector[1], vector[2], 1]);
+  const clipPosition = multiplyMat4Vec4(cameraState.projectionMatrix, viewPosition);
+  const w = clipPosition[3];
+  if (!Number.isFinite(w) || Math.abs(w) <= 1e-6) {
+    return null;
+  }
+
+  const ndcX = clipPosition[0] / w;
+  const ndcY = clipPosition[1] / w;
+  const ndcZ = clipPosition[2] / w;
+  const visible = w > 0 && ndcZ >= -1.1 && ndcZ <= 1.1;
+  return {
+    x: ((ndcX * 0.5) + 0.5) * stageWidth,
+    y: ((-ndcY * 0.5) + 0.5) * stageHeight,
+    visible,
+  };
+}
+
+function updateSkyCardinals(cameraState) {
+  if (!skyStage) {
+    return;
+  }
+
+  const stageWidth = skyStage.clientWidth;
+  const stageHeight = skyStage.clientHeight;
+  const positions = {
+    N: scaleVector(azelToXYZ(0, 0), 1.01),
+    S: scaleVector(azelToXYZ(180, 0), 1.01),
+    E: scaleVector(azelToXYZ(90, 0), 1.01),
+    O: scaleVector(azelToXYZ(270, 0), 1.01),
+  };
+
+  Object.entries(skyCardinals).forEach(([label, element]) => {
+    if (!element) {
+      return;
+    }
+    const projected = projectWorldPointToStage(positions[label], cameraState, stageWidth, stageHeight);
+    if (!projected || !projected.visible) {
+      element.style.opacity = "0";
+      return;
+    }
+    element.style.left = `${projected.x}px`;
+    element.style.top = `${projected.y}px`;
+    element.style.opacity = "1";
+  });
+}
+
+function addVectors(...vectors) {
+  const result = [0, 0, 0];
+  vectors.forEach((vector) => {
+    if (!vector) {
+      return;
+    }
+    result[0] += vector[0];
+    result[1] += vector[1];
+    result[2] += vector[2];
+  });
+  return result;
+}
+
+function addTriangle(values, a, b, c) {
+  values.push(
+    a[0], a[1], a[2],
+    b[0], b[1], b[2],
+    c[0], c[1], c[2],
+  );
+}
+
+function addQuad(values, a, b, c, d) {
+  addTriangle(values, a, b, c);
+  addTriangle(values, a, c, d);
+}
+
+function addLineSegment(values, start, end, alpha) {
+  values.push(
+    start[0], start[1], start[2], alpha,
+    end[0], end[1], end[2], alpha,
+  );
+}
+
+function orientedPoint(center, axisX, axisY, axisZ, offsetX, offsetY, offsetZ) {
+  return [
+    center[0] + (axisX[0] * offsetX) + (axisY[0] * offsetY) + (axisZ[0] * offsetZ),
+    center[1] + (axisX[1] * offsetX) + (axisY[1] * offsetY) + (axisZ[1] * offsetZ),
+    center[2] + (axisX[2] * offsetX) + (axisY[2] * offsetY) + (axisZ[2] * offsetZ),
+  ];
+}
+
+function appendBoxGeometry(triangles, outline, center, axisX, axisY, axisZ, halfX, halfY, halfZ, outlineAlpha = 0.38) {
+  const corners = {
+    lbf: orientedPoint(center, axisX, axisY, axisZ, -halfX, -halfY, halfZ),
+    rbf: orientedPoint(center, axisX, axisY, axisZ, halfX, -halfY, halfZ),
+    rtf: orientedPoint(center, axisX, axisY, axisZ, halfX, halfY, halfZ),
+    ltf: orientedPoint(center, axisX, axisY, axisZ, -halfX, halfY, halfZ),
+    lbb: orientedPoint(center, axisX, axisY, axisZ, -halfX, -halfY, -halfZ),
+    rbb: orientedPoint(center, axisX, axisY, axisZ, halfX, -halfY, -halfZ),
+    rtb: orientedPoint(center, axisX, axisY, axisZ, halfX, halfY, -halfZ),
+    ltb: orientedPoint(center, axisX, axisY, axisZ, -halfX, halfY, -halfZ),
+  };
+
+  addQuad(triangles, corners.lbf, corners.rbf, corners.rtf, corners.ltf);
+  addQuad(triangles, corners.rbb, corners.lbb, corners.ltb, corners.rtb);
+  addQuad(triangles, corners.lbb, corners.lbf, corners.ltf, corners.ltb);
+  addQuad(triangles, corners.rbf, corners.rbb, corners.rtb, corners.rtf);
+  addQuad(triangles, corners.ltf, corners.rtf, corners.rtb, corners.ltb);
+  addQuad(triangles, corners.lbb, corners.rbb, corners.rbf, corners.lbf);
+
+  addLineSegment(outline, corners.lbf, corners.rbf, outlineAlpha);
+  addLineSegment(outline, corners.rbf, corners.rtf, outlineAlpha);
+  addLineSegment(outline, corners.rtf, corners.ltf, outlineAlpha);
+  addLineSegment(outline, corners.ltf, corners.lbf, outlineAlpha);
+  addLineSegment(outline, corners.lbb, corners.rbb, outlineAlpha);
+  addLineSegment(outline, corners.rbb, corners.rtb, outlineAlpha);
+  addLineSegment(outline, corners.rtb, corners.ltb, outlineAlpha);
+  addLineSegment(outline, corners.ltb, corners.lbb, outlineAlpha);
+  addLineSegment(outline, corners.lbf, corners.lbb, outlineAlpha);
+  addLineSegment(outline, corners.rbf, corners.rbb, outlineAlpha);
+  addLineSegment(outline, corners.rtf, corners.rtb, outlineAlpha);
+  addLineSegment(outline, corners.ltf, corners.ltb, outlineAlpha);
+}
+
+function appendRoundedPanelGeometry(triangles, outline, center, right, up, normal, width, height, thickness, cornerRadius) {
+  const halfWidth = width * 0.5;
+  const halfHeight = height * 0.5;
+  const corner = Math.min(cornerRadius, halfWidth * 0.45, halfHeight * 0.45);
+  const profile = [
+    [-halfWidth + corner, -halfHeight],
+    [halfWidth - corner, -halfHeight],
+    [halfWidth, -halfHeight + corner],
+    [halfWidth, halfHeight - corner],
+    [halfWidth - corner, halfHeight],
+    [-halfWidth + corner, halfHeight],
+    [-halfWidth, halfHeight - corner],
+    [-halfWidth, -halfHeight + corner],
+  ];
+  const frontCenter = addVectors(center, scaleVector(normal, thickness * 0.5));
+  const backCenter = addVectors(center, scaleVector(normal, -thickness * 0.5));
+  const front = profile.map(([x, y]) => orientedPoint(frontCenter, right, up, normal, x, y, 0));
+  const back = profile.map(([x, y]) => orientedPoint(backCenter, right, up, normal, x, y, 0));
+
+  for (let index = 0; index < front.length; index += 1) {
+    const next = (index + 1) % front.length;
+    addTriangle(triangles, frontCenter, front[index], front[next]);
+    addTriangle(triangles, backCenter, back[next], back[index]);
+    addQuad(triangles, front[index], front[next], back[next], back[index]);
+    addLineSegment(outline, front[index], front[next], 0.46);
+    addLineSegment(outline, back[index], back[next], 0.22);
+    addLineSegment(outline, front[index], back[index], 0.18);
+  }
+}
+
+function buildDishModel(dish) {
+  if (!Number.isFinite(dish?.azimuth) || !Number.isFinite(dish?.elevation)) {
+    return { mesh: EMPTY_FLOAT32, outline: EMPTY_FLOAT32 };
+  }
+
+  const axis = normalizeVec3(azelToXYZ(dish.azimuth, dish.elevation));
+  const { u, v } = buildPerpendicularBasis(axis);
+  const worldRight = [1, 0, 0];
+  const worldUp = [0, 1, 0];
+  const worldForward = [0, 0, 1];
+  const triangles = [];
+  const outline = [];
+
+  appendBoxGeometry(
+    triangles,
+    outline,
+    [0, -0.072, 0],
+    worldRight,
+    worldUp,
+    worldForward,
+    0.014,
+    0.072,
+    0.014,
+    0.18,
+  );
+  appendBoxGeometry(
+    triangles,
+    outline,
+    [0, -0.142, 0],
+    worldRight,
+    worldUp,
+    worldForward,
+    0.068,
+    0.006,
+    0.017,
+    0.14,
+  );
+  appendBoxGeometry(
+    triangles,
+    outline,
+    [0, -0.142, 0],
+    worldForward,
+    worldUp,
+    worldRight,
+    0.052,
+    0.006,
+    0.017,
+    0.14,
+  );
+  appendBoxGeometry(
+    triangles,
+    outline,
+    [0, -0.004, 0],
+    worldRight,
+    worldUp,
+    worldForward,
+    0.019,
+    0.019,
+    0.019,
+    0.22,
+  );
+
+  const panelCenter = addVectors(scaleVector(axis, 0.096), scaleVector(v, 0.008));
+  appendRoundedPanelGeometry(triangles, outline, panelCenter, u, v, axis, 0.235, 0.152, 0.013, 0.03);
+
+  const armTarget = addVectors(panelCenter, scaleVector(axis, -0.02));
+  const armCenter = scaleVector(armTarget, 0.5);
+  const armAxis = normalizeVec3(armTarget);
+  const armBasis = buildPerpendicularBasis(armAxis);
+  appendBoxGeometry(
+    triangles,
+    outline,
+    armCenter,
+    armBasis.u,
+    armBasis.v,
+    armAxis,
+    0.012,
+    0.01,
+    Math.max(0.01, Math.hypot(armTarget[0], armTarget[1], armTarget[2]) * 0.5),
+    0.2,
+  );
+
+  return {
+    mesh: triangles.length ? new Float32Array(triangles) : EMPTY_FLOAT32,
+    outline: outline.length ? new Float32Array(outline) : EMPTY_FLOAT32,
+  };
 }
 
 function isGridCellInsideProjection(x, y, projection) {
@@ -368,173 +539,6 @@ function parseSegmentPayload(segment, index) {
     lastSeenAt: Date.now(),
     missingSince: null,
   };
-}
-
-function placeOverlay(element, panel) {
-  element.style.left = `${panel.x}px`;
-  element.style.top = `${panel.y}px`;
-  element.style.width = `${panel.width}px`;
-  element.style.height = `${panel.height}px`;
-}
-
-function placeCaptions(layout) {
-  throughputCaption.style.left = `${layout.throughput.x + 20}px`;
-  throughputCaption.style.top = `${layout.throughput.y + 18}px`;
-  bufferbloatCaption.style.left = `${layout.bufferbloat.x + 20}px`;
-  bufferbloatCaption.style.top = `${layout.bufferbloat.y + 18}px`;
-}
-
-function renderPanelOverlays(snapshot) {
-  const layout = renderer.layout();
-  placeCaptions(layout);
-  placeOverlay(throughputOverlay, layout.throughput);
-  placeOverlay(bufferbloatOverlay, layout.bufferbloat);
-  placeOverlay(throughputAnnotations, layout.throughput);
-  placeOverlay(bufferbloatAnnotations, layout.bufferbloat);
-  renderThroughputOverlay(snapshot);
-  renderBufferbloatOverlay(snapshot, layout.bufferbloat);
-  renderThroughputAnnotations(snapshot, layout.throughput);
-  renderBufferbloatAnnotations(snapshot, layout.bufferbloat);
-}
-
-function renderThroughputOverlay(snapshot) {
-  const throughput = snapshot?.throughput || {};
-  const currentDown = Number(throughput.current?.downlink_bps) || 0;
-  const currentUp = Number(throughput.current?.uplink_bps) || 0;
-  const optimalDown = Number(throughput.optimal?.downlink_bps) || 0;
-  const optimalUp = Number(throughput.optimal?.uplink_bps) || 0;
-  const recommendedDown = Number(throughput.autorate?.recommended_downlink_bps) || optimalDown;
-  const recommendedUp = Number(throughput.autorate?.recommended_uplink_bps) || optimalUp;
-
-  const visualMaxDown = Math.max(currentDown, optimalDown, Math.min(recommendedDown, Math.max(optimalDown * 1.4, currentDown * 1.4, 1)), 1);
-  const visualMaxUp = Math.max(currentUp, optimalUp, Math.min(recommendedUp, Math.max(optimalUp * 1.4, currentUp * 1.4, 1)), 1);
-
-  throughputOverlay.innerHTML = `
-    <div class="throughput-shell">
-      ${throughputLane("Downlink", currentDown, optimalDown, recommendedDown, visualMaxDown)}
-      ${throughputLane("Uplink", currentUp, optimalUp, recommendedUp, visualMaxUp)}
-    </div>
-  `;
-}
-
-function throughputLane(label, current, optimal, recommended, maxValue) {
-  const optimalWidth = clamp((optimal / maxValue) * 100, 0, 100);
-  const currentWidth = clamp((current / maxValue) * 100, 0, 100);
-  const markerLeft = clamp((recommended / maxValue) * 100, 0, 100);
-  return `
-    <div class="throughput-lane">
-      <div class="throughput-lane-label">${label}</div>
-      <div class="throughput-bar">
-        <div class="throughput-fill-optimal" style="left:0;width:${optimalWidth}%"></div>
-        <div class="throughput-fill-current" style="left:0;width:${currentWidth}%"></div>
-        <div class="throughput-marker" style="left:calc(${markerLeft}% - 1px)"></div>
-      </div>
-      <div class="throughput-meta">
-        <span>${formatBps(current)}</span>
-        <span>${formatBps(optimal)}</span>
-      </div>
-    </div>
-  `;
-}
-
-function renderThroughputAnnotations(snapshot, panel) {
-  const throughput = snapshot?.throughput || {};
-  const autorate = throughput.autorate || {};
-  const firstReadoutTop = Math.round(Math.max(108, panel.height * 0.24));
-  const secondReadoutTop = Math.round(Math.max(260, panel.height * 0.50));
-  throughputAnnotations.innerHTML = `
-    <div class="graph-stat-row">
-      <span>Confidence ${Math.round((throughput.confidence || 0) * 100)}%</span>
-      <span>${throughput.valid_sample_count || 0} valid samples</span>
-      <span>Down target ${formatBps(autorate.recommended_downlink_bps)}</span>
-      <span>Up target ${formatBps(autorate.recommended_uplink_bps)}</span>
-    </div>
-    <div class="throughput-readout" style="top:${firstReadoutTop}px">
-      <div class="throughput-readout-label">Downlink</div>
-      <div class="throughput-readout-values">
-        <span>Current ${formatBps(throughput.current?.downlink_bps)}</span>
-        <span>Optimal ${formatBps(throughput.optimal?.downlink_bps)}</span>
-      </div>
-    </div>
-    <div class="throughput-readout" style="top:${secondReadoutTop}px">
-      <div class="throughput-readout-label">Uplink</div>
-      <div class="throughput-readout-values">
-        <span>Current ${formatBps(throughput.current?.uplink_bps)}</span>
-        <span>Optimal ${formatBps(throughput.optimal?.uplink_bps)}</span>
-      </div>
-    </div>
-  `;
-}
-
-function renderBufferbloatOverlay(snapshot, panel) {
-  const buckets = snapshot?.bufferbloat || [];
-  if (!buckets.length) {
-    bufferbloatOverlay.innerHTML = "";
-    return;
-  }
-
-  const width = Math.max(panel.width - 30, 1);
-  const height = Math.max(panel.height - 42, 1);
-  const padding = { left: 18, right: 18, top: 40, bottom: 26 };
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
-  const maxLatency = Math.max(...buckets.map((bucket) => bucket.max_latency_ms), 1);
-  const minLoad = buckets[0].load_min_bps;
-  const maxLoad = buckets[buckets.length - 1].load_max_bps;
-  const logMin = Math.log10(minLoad);
-  const logMax = Math.log10(maxLoad);
-
-  const xFor = (load) => padding.left + ((Math.log10(load) - logMin) / Math.max(logMax - logMin, 1e-6)) * plotWidth;
-  const yFor = (latency) => padding.top + (1 - latency / maxLatency) * plotHeight;
-
-  const topLine = [];
-  const bottomLine = [];
-  const median = [];
-  const points = [];
-  for (const bucket of buckets) {
-    const x = xFor(bucket.load_mid_bps);
-    const y = yFor(bucket.median_latency_ms);
-    topLine.push(`${x},${y}`);
-    bottomLine.unshift(`${x},${padding.top + plotHeight}`);
-    median.push(`${x},${y}`);
-    points.push(`<circle class="bufferbloat-point" cx="${x}" cy="${y}" r="2.5" />`);
-  }
-
-  bufferbloatOverlay.innerHTML = `
-    <svg class="bufferbloat-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-      <line class="bufferbloat-axis" x1="${padding.left}" y1="${padding.top + plotHeight}" x2="${padding.left + plotWidth}" y2="${padding.top + plotHeight}" />
-      <polygon class="bufferbloat-band" points="${topLine.concat(bottomLine).join(" ")}" />
-      <polyline class="bufferbloat-line" points="${median.join(" ")}" />
-      ${points.join("")}
-    </svg>
-  `;
-}
-
-function renderBufferbloatAnnotations(snapshot, panel) {
-  const buckets = snapshot?.bufferbloat || [];
-  if (!buckets.length) {
-    bufferbloatAnnotations.innerHTML = "";
-    return;
-  }
-
-  const lastBucket = buckets.at(-1);
-  const maxLatency = Math.max(...buckets.map((bucket) => bucket.max_latency_ms));
-  const lowLoad = buckets[0].load_min_bps;
-  const highLoad = buckets[buckets.length - 1].load_max_bps;
-
-  bufferbloatAnnotations.innerHTML = `
-    <div class="graph-stat-row graph-stat-row-right">
-      <span>${buckets.length} buckets</span>
-      <span>Latest ${formatMs(lastBucket.median_latency_ms)}</span>
-      <span>Low ${formatBps(lowLoad)}</span>
-      <span>High ${formatBps(highLoad)}</span>
-    </div>
-    <div class="bufferbloat-axis-label bufferbloat-axis-top" style="top:${Math.round(panel.height * 0.16)}px">${formatMs(maxLatency)}</div>
-    <div class="bufferbloat-axis-label bufferbloat-axis-bottom" style="bottom:${Math.round(panel.height * 0.13)}px">0 ms</div>
-    <div class="bufferbloat-axis-label bufferbloat-axis-left">Low load ${formatBps(lowLoad)}</div>
-    <div class="bufferbloat-axis-label bufferbloat-axis-right">High load ${formatBps(highLoad)}</div>
-    <div class="bufferbloat-axis-label bufferbloat-axis-note">Median latency vs load</div>
-  `;
 }
 
 function updateSatelliteSegments(snapshot, now = Date.now()) {
@@ -691,7 +695,7 @@ function satelliteAnimationActive(now = Date.now()) {
   return false;
 }
 
-function buildGridPointLayer(grid, width, height, projection, radius, size, alphaFor, inFov = null) {
+function buildObstructionMapLayer(grid, width, height, projection, radius, size, inFov = null) {
   if (!grid?.length || !width || !height) {
     return EMPTY_FLOAT32;
   }
@@ -711,59 +715,22 @@ function buildGridPointLayer(grid, width, height, projection, radius, size, alph
       if (inFov && !inFov(azimuth, elevation)) {
         continue;
       }
+      const obstruction = clamp(1 - value, 0, 1);
+      const greenBlue = 1 - (obstruction * 0.94);
+      const alpha = 0.24 + (obstruction * 0.56);
       const point = scaleVector(azelToXYZ(azimuth, elevation), radius);
-      values.push(point[0], point[1], point[2], size, clamp(alphaFor(value), 0.015, 0.42));
+      values.push(
+        point[0],
+        point[1],
+        point[2],
+        size,
+        1,
+        greenBlue,
+        greenBlue,
+        clamp(alpha, 0.24, 0.8),
+      );
     }
   }
-
-  return values.length ? new Float32Array(values) : EMPTY_FLOAT32;
-}
-
-function buildMaskPointLayer(mask, width, height, projection, radius, size, inFov = null) {
-  if (!mask?.length || !width || !height) {
-    return EMPTY_FLOAT32;
-  }
-
-  const values = [];
-  for (let y = 0; y < Math.min(height, mask.length); y += 1) {
-    const row = mask[y];
-    for (let x = 0; x < Math.min(width, row.length); x += 1) {
-      if (!isGridCellInsideProjection(x, y, projection)) {
-        continue;
-      }
-      if (!row[x]) {
-        continue;
-      }
-      const { azimuth, elevation } = gridCellToAzEl(x, y, projection);
-      if (inFov && !inFov(azimuth, elevation)) {
-        continue;
-      }
-      const point = scaleVector(azelToXYZ(azimuth, elevation), radius);
-      values.push(point[0], point[1], point[2], size, 0.24);
-    }
-  }
-
-  return values.length ? new Float32Array(values) : EMPTY_FLOAT32;
-}
-
-function buildClusterPointLayer(clusters) {
-  if (!clusters?.length) {
-    return EMPTY_FLOAT32;
-  }
-
-  const values = [];
-  clusters.forEach((cluster) => {
-    const azimuth = Number(cluster?.centroid?.azimuth);
-    const elevation = Number(cluster?.centroid?.elevation);
-    if (!Number.isFinite(azimuth) || !Number.isFinite(elevation)) {
-      return;
-    }
-    const radius = GRID_LAYER_RADII.clusters;
-    const point = scaleVector(azelToXYZ(azimuth, elevation), radius);
-    const size = clamp(9 + Number(cluster?.size || 0) * 0.3, 10, 24);
-    const alpha = clamp(0.22 + Number(cluster?.mean_score || 0) * 0.4, 0.24, 0.72);
-    values.push(point[0], point[1], point[2], size, alpha);
-  });
 
   return values.length ? new Float32Array(values) : EMPTY_FLOAT32;
 }
@@ -847,46 +814,39 @@ function buildSkyScene(snapshot, projection, active, now) {
   const height = dimensions.height || 0;
   const layers = sky.layers || {};
   const dish = sky.dish || {};
-  const clusters = sky.persistent_obstructions?.clusters || [];
-  const cellRadius = width && height ? clamp(920 / Math.max(width, height), 2.2, 7.5) : 4.5;
+  const obstructionGrid = layers.average?.length ? layers.average : layers.current;
+  const cellRadius = width && height ? clamp(920 / Math.max(width, height), 2.8, 8.2) : 5.2;
   const inDishFov = createDishFovFilter(dish);
   const satellites = active.live ? animatedLiveSatellites(now) : [];
+  const dishModel = active.dish ? buildDishModel(dish) : { mesh: EMPTY_FLOAT32, outline: EMPTY_FLOAT32 };
 
   return {
-    layers: [
+    obstructionMap: active.mask
+      ? buildObstructionMapLayer(
+        obstructionGrid,
+        width,
+        height,
+        projection,
+        GRID_LAYER_RADII.obstruction,
+        cellRadius,
+        inDishFov,
+      )
+      : EMPTY_FLOAT32,
+    solidLayers: [
       {
-        points: active.average
-          ? buildGridPointLayer(layers.average, width, height, projection, GRID_LAYER_RADII.average, cellRadius, (value) => 0.02 + (1 - value) * 0.22, inDishFov)
-          : EMPTY_FLOAT32,
+        points: dishModel.mesh,
         color: [1, 1, 1],
-      },
-      {
-        points: active.current
-          ? buildGridPointLayer(layers.current, width, height, projection, GRID_LAYER_RADII.current, cellRadius, (value) => 0.03 + (1 - value) * 0.28, inDishFov)
-          : EMPTY_FLOAT32,
-        color: [1, 1, 1],
-      },
-      {
-        points: active.mask
-          ? buildMaskPointLayer(layers.persistent_mask, width, height, projection, GRID_LAYER_RADII.mask, cellRadius + 1, inDishFov)
-          : EMPTY_FLOAT32,
-        color: [1, 1, 1],
-      },
-      {
-        points: active.tracks
-          ? buildGridPointLayer(layers.satellite_tracks, width, height, projection, GRID_LAYER_RADII.tracks, Math.max(1.8, cellRadius * 0.64), (value) => 0.08 + value * 0.35, inDishFov)
-          : EMPTY_FLOAT32,
-        color: [1, 1, 1],
-      },
-      {
-        points: active.clusters
-          ? buildClusterPointLayer(clusters)
-          : EMPTY_FLOAT32,
-        color: [1, 1, 1],
+        alpha: 0.82,
       },
     ],
+    layers: [],
     satellites: buildSatellitePointLayer(satellites, GRID_LAYER_RADII.satellites),
     lineLayers: [
+      {
+        points: active.dish ? dishModel.outline : EMPTY_FLOAT32,
+        color: [1, 1, 1],
+        primitive: "lines",
+      },
       {
         points: active.dish ? buildDishAxisLayer(dish) : EMPTY_FLOAT32,
         color: [1, 1, 1],
@@ -916,9 +876,7 @@ function logSkySummary(snapshot, projection, active, animatedSatellites, useSkyW
   const observer = sky.observer || null;
   const tle = sky.tle || {};
   skyDebugLog("summary", {
-    renderMode: state.renderMode,
     skyRenderer: useSkyWebgl ? "webgl" : "unavailable",
-    dashboardWebgl: state.rendererSupportsWebgl,
     skyWebgl: state.skyRendererSupportsWebgl,
     activeLayers: Object.entries(active)
       .filter(([, enabled]) => enabled)
@@ -967,8 +925,6 @@ function renderSkyView(snapshot, now = Date.now()) {
   const width = dimensions.width || 0;
   const height = dimensions.height || 0;
   const projection = normalizeProjection(width, height, sky.projection || {});
-  const layers = sky.layers || {};
-  const clusters = sky.persistent_obstructions?.clusters || [];
   const stats = sky.persistent_obstructions?.stats || {};
   const liveSatellites = sky.live_satellites || [];
   const tle = sky.tle || {};
@@ -977,13 +933,9 @@ function renderSkyView(snapshot, now = Date.now()) {
   const useSkyWebgl = !!(state.skyRendererSupportsWebgl && skyRenderer);
 
   const active = {
-    current: layerInputs.current.checked,
-    average: layerInputs.average.checked,
     mask: layerInputs.mask.checked,
-    tracks: layerInputs.tracks.checked,
     live: layerInputs.live.checked,
     dish: layerInputs.dish.checked,
-    clusters: layerInputs.clusters.checked,
   };
 
   const animatedSatellites = active.live ? animatedLiveSatellites(now, liveSatellites) : [];
@@ -1002,15 +954,16 @@ function renderSkyView(snapshot, now = Date.now()) {
   }
   const cameraState = useSkyWebgl && skyRenderer ? skyRenderer.getCameraState() : null;
   const cameraText = cameraState
-    ? `Orbit ${(cameraState.theta * 180 / Math.PI).toFixed(0)}°, polar ${(cameraState.phi * 180 / Math.PI).toFixed(0)}°, radius ${cameraState.radius.toFixed(2)}`
-    : "Drag to orbit, wheel to zoom";
+    ? `Rotation ${(cameraState.theta * 180 / Math.PI).toFixed(0)}°, inclinaison ${(cameraState.phi * 180 / Math.PI).toFixed(0)}°, distance ${cameraState.radius.toFixed(2)}`
+    : "Glisse pour tourner, molette pour zoomer";
+  updateSkyCardinals(cameraState);
 
   const obstructed = stats.obstructed_cells || 0;
-  const coverage = Number.isFinite(stats.coverage) ? `${(stats.coverage * 100).toFixed(1)}% sky blocked` : "No obstruction stats";
+  const coverage = Number.isFinite(stats.coverage) ? `${(stats.coverage * 100).toFixed(1)}% du ciel obstrue` : "Pas de stats d'obstruction";
   const observerText = observer
-    ? `${observer.latitude}, ${observer.longitude}${Number.isFinite(observer.altitude_m) ? `, ${Number(observer.altitude_m).toFixed(1)} m` : ""} (${observer.source || "observer"})`
-    : "observer unknown";
-  const skyRendererLabel = useSkyWebgl ? "WebGL" : `Unavailable${state.skyRenderError ? ` (${state.skyRenderError})` : ""}`;
+    ? `${observer.latitude}, ${observer.longitude}${Number.isFinite(observer.altitude_m) ? `, ${Number(observer.altitude_m).toFixed(1)} m` : ""} (${formatObserverSource(observer.source)})`
+    : "observateur inconnu";
+  const skyRendererLabel = useSkyWebgl ? "WebGL" : `Indisponible${state.skyRenderError ? ` (${state.skyRenderError})` : ""}`;
   const observerInputsFocused = observerInputs.includes(document.activeElement);
   if (observer && !observerInputsFocused && !state.observerSaving) {
     const manualDraft = observer.source === "manual" ? state.manualObserverDraft : null;
@@ -1019,65 +972,29 @@ function renderSkyView(snapshot, now = Date.now()) {
     observerAltitudeInput.value = manualDraft?.altitude ?? observerDisplayValue(observer.altitude_m);
   }
   skyStatus.innerHTML = `
-    <strong>Dish</strong> ${dish.azimuth != null && dish.elevation != null ? `${dish.azimuth.toFixed(1)}° / ${dish.elevation.toFixed(1)}°` : "direction unavailable"}<br>
-    <strong>FOV</strong> ${Number.isFinite(dish.fov_total_angle_deg) ? `${Number(dish.fov_total_angle_deg).toFixed(0)}° cone` : "unavailable"}<br>
+    <strong>Antenne</strong> ${dish.azimuth != null && dish.elevation != null ? `${dish.azimuth.toFixed(1)}° / ${dish.elevation.toFixed(1)}°` : "direction indisponible"}<br>
+    <strong>Champ</strong> ${Number.isFinite(dish.fov_total_angle_deg) ? `${Number(dish.fov_total_angle_deg).toFixed(0)}° de cone` : "indisponible"}<br>
     <strong>Camera</strong> ${escapeHtml(cameraText)}<br>
-    <strong>Sky Renderer</strong> ${escapeHtml(skyRendererLabel)}<br>
-    <strong>Observer</strong> ${escapeHtml(observerText)}<br>
-    <strong>Obstructions</strong> ${obstructed} cells, ${coverage}<br>
+    <strong>Rendu ciel</strong> ${escapeHtml(skyRendererLabel)}<br>
+    <strong>Observateur</strong> ${escapeHtml(observerText)}<br>
+    <strong>Obstructions</strong> ${obstructed} cellules, ${coverage}<br>
     <strong>Projection</strong> ${escapeHtml(projection.referenceFrame)}
   `;
   skyClusters.innerHTML = `
-    <strong>Clusters</strong> ${clusters.length} persistent clusters<br>
-    <strong>TLE</strong> ${observer ? (tle.available ? `${tle.active_segment_count || tle.visible_count || animatedSatellites.length || liveSatellites.length} in beam / ${tle.satellite_count} catalogued` : escapeHtml(tle.error || "catalog unavailable")) : "set observer location to enable live satellites"}<br>
-    <strong>Tracks</strong> ${(sky.passive_tracking?.total_events || 0)} passive events
+    <strong>Satellites</strong> ${observer ? (tle.available ? `${tle.active_segment_count || tle.visible_count || animatedSatellites.length || liveSatellites.length} dans le faisceau / ${tle.satellite_count} catalogues` : escapeHtml(tle.error || "catalogue indisponible")) : "definis la position de l'observateur pour activer les satellites en direct"}<br>
+    <strong>Traces</strong> ${(sky.passive_tracking?.total_events || 0)} evenements passifs
   `;
   logSkySummary(snapshot, projection, active, animatedSatellites, !!useSkyWebgl, now);
 }
 
 function updateConnectionUi(kind, detail) {
-  pill.className = "pill";
-  if (kind === "open") {
-    pill.classList.add("pill-ok");
-    pill.textContent = "Streaming";
-  } else if (kind === "reconnecting") {
-    pill.classList.add("pill-warn");
-    pill.textContent = "Reconnecting";
-  } else {
-    pill.classList.add("pill-warn");
-    pill.textContent = "Connecting";
-  }
-  connectionDetail.textContent = detail;
-}
-
-function switchRenderMode(mode, reason = "") {
-  state.renderMode = mode;
-  state.renderError = reason;
-  skyDebugLog("render-mode", {
-    mode,
-    reason: reason || null,
-    dashboardWebgl: state.rendererSupportsWebgl,
-    skyWebgl: state.skyRendererSupportsWebgl,
-  });
-  applyRenderMode();
-  if (state.snapshot) {
-    renderSkyView(state.snapshot, Date.now());
-  }
-  requestRender();
+  state.connectionState = kind;
+  state.connectionDetail = detail;
 }
 
 function activeExportLayer() {
-  if (layerInputs.current.checked) {
-    return "current";
-  }
-  if (layerInputs.average.checked) {
-    return "average";
-  }
   if (layerInputs.mask.checked) {
-    return "mask";
-  }
-  if (layerInputs.tracks.checked) {
-    return "tracks";
+    return "average";
   }
   return "average";
 }
@@ -1111,13 +1028,6 @@ async function postJson(url, payload = null) {
   return response.json();
 }
 
-renderModeToggle.addEventListener("click", () => {
-  if (!state.rendererSupportsWebgl) {
-    return;
-  }
-  switchRenderMode(state.renderMode === "webgl" ? "fallback" : "webgl");
-});
-
 for (const input of Object.values(layerInputs)) {
   input.addEventListener("change", () => {
     if (state.snapshot) {
@@ -1130,25 +1040,12 @@ exportButton.addEventListener("click", async () => {
   try {
     exportButton.disabled = true;
     await triggerExport();
-    updateConnectionUi("open", `Exported ${activeExportLayer()} layer as PNG.`);
+    updateConnectionUi("open", `Couche ${activeExportLayer()} exportee en PNG.`);
   } catch (error) {
     console.error(error);
-    updateConnectionUi("reconnecting", error?.message || "PNG export failed.");
+    updateConnectionUi("reconnecting", error?.message || "Echec de l'export PNG.");
   } finally {
     exportButton.disabled = false;
-  }
-});
-
-resetButton.addEventListener("click", async () => {
-  try {
-    resetButton.disabled = true;
-    await postJson("/api/reset");
-    updateConnectionUi("open", "Obstruction history reset. Waiting for fresh samples.");
-  } catch (error) {
-    console.error(error);
-    updateConnectionUi("reconnecting", error?.message || "Reset failed.");
-  } finally {
-    resetButton.disabled = false;
   }
 });
 
@@ -1156,10 +1053,10 @@ tleRefreshButton.addEventListener("click", async () => {
   try {
     tleRefreshButton.disabled = true;
     const result = await postJson("/api/tle/refresh");
-    updateConnectionUi("open", result.error ? `TLE refresh error: ${result.error}` : `TLE refresh complete: ${result.satellite_count || 0} satellites.`);
+    updateConnectionUi("open", result.error ? `Erreur de rafraichissement TLE : ${result.error}` : `Rafraichissement TLE termine : ${result.satellite_count || 0} satellites.`);
   } catch (error) {
     console.error(error);
-    updateConnectionUi("reconnecting", error?.message || "TLE refresh failed.");
+    updateConnectionUi("reconnecting", error?.message || "Echec du rafraichissement TLE.");
   } finally {
     tleRefreshButton.disabled = false;
   }
@@ -1182,7 +1079,7 @@ observerSaveButton.addEventListener("click", async () => {
   const longitude = parseDecimalInput(draft.longitude);
   const altitude = parseDecimalInput(draft.altitude);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(altitude)) {
-    updateConnectionUi("reconnecting", "Enter valid observer latitude, longitude, and altitude.");
+    updateConnectionUi("reconnecting", "Entre une latitude, une longitude et une altitude valides.");
     return;
   }
   try {
@@ -1190,26 +1087,23 @@ observerSaveButton.addEventListener("click", async () => {
     state.manualObserverDraft = draft;
     observerSaveButton.disabled = true;
     await postJson("/api/observer", { latitude, longitude, altitude_m: altitude });
-    updateConnectionUi("open", `Observer saved at ${draft.latitude}, ${draft.longitude}, ${draft.altitude} m. Refreshing live satellites.`);
+    updateConnectionUi("open", `Position enregistree : ${draft.latitude}, ${draft.longitude}, ${draft.altitude} m. Rafraichissement des satellites en direct.`);
     await postJson("/api/tle/refresh");
   } catch (error) {
     console.error(error);
-    updateConnectionUi("reconnecting", error?.message || "Observer update failed.");
+    updateConnectionUi("reconnecting", error?.message || "Echec de la mise a jour de l'observateur.");
   } finally {
     state.observerSaving = false;
     observerSaveButton.disabled = false;
   }
 });
 
-applyRenderMode();
-placeCaptions(renderer.layout());
-
 const socket = createSocketClient({
   url: wsUrl,
   onState(connectionState) {
     updateConnectionUi(
       connectionState,
-      connectionState === "open" ? "WebSocket connected to /ws." : "Waiting for backend frames.",
+      connectionState === "open" ? "WebSocket connecte a /ws." : "En attente des trames du backend.",
     );
   },
   onMessage(snapshot) {
@@ -1221,18 +1115,13 @@ const socket = createSocketClient({
     updateSatelliteSegments(snapshot, now);
     renderSidebar(snapshot);
     renderSkyView(snapshot, now);
-    renderPanelOverlays(snapshot);
-    updateConnectionUi("open", snapshot.meta?.worker_error || `Streaming ${snapshot.meta?.sample_count || 0} buffered samples.`);
-    requestRender();
+    updateConnectionUi("open", snapshot.meta?.worker_error || `${snapshot.meta?.sample_count || 0} echantillons tamponnes en direct.`);
   },
 });
 
 window.addEventListener("resize", () => {
-  placeCaptions(renderer.layout());
   if (state.snapshot) {
     renderSkyView(state.snapshot, Date.now());
-    renderPanelOverlays(state.snapshot);
-    requestRender();
   }
 });
 
@@ -1247,22 +1136,6 @@ function frame() {
   );
   if (animateSky) {
     renderSkyView(state.snapshot, now);
-  }
-  if (state.dirty) {
-    if (state.renderMode === "webgl") {
-      try {
-        renderer.render(state.snapshot);
-        if (state.renderError) {
-          state.renderError = "";
-          applyRenderMode();
-          placeCaptions(renderer.layout());
-        }
-      } catch (error) {
-        console.error("WebGL draw failed, switching to fallback overlay.", error);
-        switchRenderMode("fallback", error?.message || "WebGL draw failed.");
-      }
-    }
-    state.dirty = false;
   }
   window.requestAnimationFrame(frame);
 }

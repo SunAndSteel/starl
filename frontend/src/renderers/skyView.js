@@ -3,7 +3,6 @@ import { azelToXYZ } from "../skyMath.js";
 import { createOrbitCamera } from "./orbitCamera.js";
 
 const EMPTY_FLOATS = new Float32Array(0);
-const SHELL_RADIUS = 1.0;
 const GUIDE_RADIUS = 1.002;
 
 function createStream(regl, components) {
@@ -78,36 +77,6 @@ function buildMeridian(azimuthDeg, radius = GUIDE_RADIUS, segments = 56, alpha =
   return new Float32Array(values);
 }
 
-function buildHemisphereMesh(radius = SHELL_RADIUS, azimuthSegments = 72, elevationBands = 26) {
-  const values = [];
-
-  for (let band = 0; band < elevationBands; band += 1) {
-    const elevation0 = (band / elevationBands) * 90;
-    const elevation1 = ((band + 1) / elevationBands) * 90;
-
-    for (let segment = 0; segment < azimuthSegments; segment += 1) {
-      const azimuth0 = (segment / azimuthSegments) * 360;
-      const azimuth1 = ((segment + 1) / azimuthSegments) * 360;
-
-      const p00 = scaleVector(azelToXYZ(azimuth0, elevation0), radius);
-      const p10 = scaleVector(azelToXYZ(azimuth1, elevation0), radius);
-      const p01 = scaleVector(azelToXYZ(azimuth0, elevation1), radius);
-      const p11 = scaleVector(azelToXYZ(azimuth1, elevation1), radius);
-
-      values.push(
-        p00[0], p00[1], p00[2],
-        p10[0], p10[1], p10[2],
-        p11[0], p11[1], p11[2],
-        p00[0], p00[1], p00[2],
-        p11[0], p11[1], p11[2],
-        p01[0], p01[1], p01[2],
-      );
-    }
-  }
-
-  return new Float32Array(values);
-}
-
 function createGuideGeometry(regl) {
   const guides = [
     createStaticGeometry(regl, buildElevationRing(0, GUIDE_RADIUS, 200, 0.18), 4, "line strip"),
@@ -121,10 +90,8 @@ function createGuideGeometry(regl) {
   ];
 
   return {
-    shell: createStaticGeometry(regl, buildHemisphereMesh(), 3, "triangles"),
     lines: guides,
     destroy() {
-      this.shell.destroy();
       this.lines.forEach((guide) => guide.destroy());
     },
   };
@@ -142,6 +109,8 @@ export function createSkyRenderer(canvas) {
   const camera = createOrbitCamera(canvas);
   const guideGeometry = createGuideGeometry(regl);
   const layerStream = createStream(regl, 5);
+  const obstructionStream = createStream(regl, 8);
+  const solidStream = createStream(regl, 3);
   const satelliteStream = createStream(regl, 6);
   const lineStream = createStream(regl, 4);
 
@@ -155,7 +124,7 @@ export function createSkyRenderer(canvas) {
     },
   };
 
-  const drawHemisphere = regl({
+  const drawSolidMesh = regl({
     blend: blendState,
     depth: {
       enable: true,
@@ -166,11 +135,12 @@ export function createSkyRenderer(canvas) {
     },
     frag: `
       precision mediump float;
-      varying float vHeight;
+      uniform vec3 uColor;
+      uniform float uAlpha;
+      varying float vShade;
 
       void main() {
-        float glow = 0.3 + 0.7 * pow(clamp(vHeight, 0.0, 1.0), 0.55);
-        gl_FragColor = vec4(vec3(1.0), 0.035 * glow);
+        gl_FragColor = vec4(uColor * vShade, uAlpha);
       }
     `,
     vert: `
@@ -178,11 +148,11 @@ export function createSkyRenderer(canvas) {
       attribute vec3 position;
       uniform mat4 uProjection;
       uniform mat4 uView;
-      varying float vHeight;
+      varying float vShade;
 
       void main() {
         gl_Position = uProjection * uView * vec4(position, 1.0);
-        vHeight = position.y;
+        vShade = 0.68 + (clamp(position.y, -0.3, 0.6) * 0.18) + (clamp(position.z, -0.5, 0.5) * 0.06);
       }
     `,
     attributes: {
@@ -196,8 +166,10 @@ export function createSkyRenderer(canvas) {
     uniforms: {
       uProjection: regl.prop("projectionMatrix"),
       uView: regl.prop("viewMatrix"),
+      uColor: regl.prop("color"),
+      uAlpha: regl.prop("alpha"),
     },
-    primitive: regl.prop("primitive"),
+    primitive: "triangles",
     count: regl.prop("count"),
   });
 
@@ -263,6 +235,81 @@ export function createSkyRenderer(canvas) {
       uView: regl.prop("viewMatrix"),
       uPixelRatio: regl.prop("pixelRatio"),
       uColor: regl.prop("color"),
+    },
+    primitive: "points",
+    count: regl.prop("count"),
+  });
+
+  const drawObstructionPoints = regl({
+    blend: blendState,
+    depth: {
+      enable: true,
+      mask: false,
+    },
+    frag: `
+      precision mediump float;
+      varying vec3 vColor;
+      varying float vAlpha;
+
+      void main() {
+        vec2 centered = gl_PointCoord * 2.0 - 1.0;
+        float radius = length(centered);
+        if (radius > 1.0) {
+          discard;
+        }
+        float falloff = 1.0 - smoothstep(0.2, 1.0, radius);
+        gl_FragColor = vec4(vColor, vAlpha * falloff);
+      }
+    `,
+    vert: `
+      precision mediump float;
+      attribute vec3 position;
+      attribute float pointSize;
+      attribute vec3 color;
+      attribute float alpha;
+      uniform mat4 uProjection;
+      uniform mat4 uView;
+      uniform float uPixelRatio;
+      varying vec3 vColor;
+      varying float vAlpha;
+
+      void main() {
+        gl_Position = uProjection * uView * vec4(position, 1.0);
+        gl_PointSize = max(1.0, pointSize * uPixelRatio);
+        vColor = color;
+        vAlpha = alpha;
+      }
+    `,
+    attributes: {
+      position: {
+        buffer: regl.prop("buffer"),
+        size: 3,
+        stride: 32,
+        offset: 0,
+      },
+      pointSize: {
+        buffer: regl.prop("buffer"),
+        size: 1,
+        stride: 32,
+        offset: 12,
+      },
+      color: {
+        buffer: regl.prop("buffer"),
+        size: 3,
+        stride: 32,
+        offset: 16,
+      },
+      alpha: {
+        buffer: regl.prop("buffer"),
+        size: 1,
+        stride: 32,
+        offset: 28,
+      },
+    },
+    uniforms: {
+      uProjection: regl.prop("projectionMatrix"),
+      uView: regl.prop("viewMatrix"),
+      uPixelRatio: regl.prop("pixelRatio"),
     },
     primitive: "points",
     count: regl.prop("count"),
@@ -445,11 +492,6 @@ export function createSkyRenderer(canvas) {
 
       regl.clear({ color: [0, 0, 0, 0], depth: 1 });
 
-      drawHemisphere({
-        ...cameraState,
-        ...guideGeometry.shell,
-      });
-
       guideGeometry.lines.forEach((guide) => {
         drawLines({
           ...cameraState,
@@ -459,6 +501,25 @@ export function createSkyRenderer(canvas) {
 
       if (!scene) {
         return;
+      }
+
+      scene.solidLayers?.forEach((layer) => {
+        if (!layer.points?.length) {
+          return;
+        }
+        drawSolidMesh({
+          ...cameraState,
+          ...solidStream.props(layer.points),
+          color: layer.color || [1, 1, 1],
+          alpha: layer.alpha ?? 0.8,
+        });
+      });
+
+      if (scene.obstructionMap?.length) {
+        drawObstructionPoints({
+          ...cameraState,
+          ...obstructionStream.props(scene.obstructionMap),
+        });
       }
 
       scene.layers.forEach((layer) => {
@@ -506,6 +567,8 @@ export function createSkyRenderer(canvas) {
       camera.destroy();
       guideGeometry.destroy();
       layerStream.destroy();
+      obstructionStream.destroy();
+      solidStream.destroy();
       satelliteStream.destroy();
       lineStream.destroy();
       regl.destroy();

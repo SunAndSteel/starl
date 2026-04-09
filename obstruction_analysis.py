@@ -285,12 +285,17 @@ def detect_persistent_obstructions(
 
     cleaned_mask = _clean_mask(base_mask)
     filtered_mask, clusters = _cluster_cells(cleaned_mask, scores, min_cluster_size=min_cluster_size, projection=map_projection)
-    obstructed_cells = sum(sum(row) for row in filtered_mask)
+    display_mask = filtered_mask
+    if not any(any(row) for row in filtered_mask):
+        # Keep small but real obstruction pockets visible when clustering is too aggressive.
+        display_mask = cleaned_mask if any(any(row) for row in cleaned_mask) else base_mask
+
+    obstructed_cells = sum(sum(row) for row in display_mask)
 
     return {
         "average_map": avg_map,
         "score_map": scores,
-        "mask": filtered_mask,
+        "mask": display_mask,
         "clusters": clusters,
         "stats": {
             "threshold": threshold,

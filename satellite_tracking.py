@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import math
 import os
+from pathlib import Path
 import threading
 from typing import Deque, List, Optional, Sequence, Tuple
 from urllib.request import Request, urlopen
@@ -22,6 +23,8 @@ EARTH_E2 = EARTH_FLATTENING * (2.0 - EARTH_FLATTENING)
 DEFAULT_DISH_FOV_HALF_ANGLE_DEG = 55.0
 DEFAULT_PROPAGATION_STEP_S = 1.0
 DEFAULT_SEGMENT_HORIZON_S = 600.0
+DEFAULT_TLE_MIN_REFRESH_S = 7200.0
+DEFAULT_TLE_CACHE_PATH = Path(__file__).resolve().parent / "data" / "starlink_catalog.tle"
 BOUNDARY_REFINEMENT_ITERATIONS = 12
 DEBUG_SUMMARY_INTERVAL_S = 5.0
 SGP4_ERROR_LOG_INTERVAL_S = 60.0
@@ -286,12 +289,16 @@ class TleTracker:
         fov_half_angle_deg: float = DEFAULT_DISH_FOV_HALF_ANGLE_DEG,
         propagation_step_s: float = DEFAULT_PROPAGATION_STEP_S,
         segment_horizon_s: float = DEFAULT_SEGMENT_HORIZON_S,
+        min_refresh_interval_s: float = DEFAULT_TLE_MIN_REFRESH_S,
+        cache_path: Optional[Path] = None,
     ) -> None:
         self.source = source
         self.timeout_s = timeout_s
         self.fov_half_angle_deg = float(fov_half_angle_deg)
         self.propagation_step_s = clamp(float(propagation_step_s), 0.25, 2.0)
         self.segment_horizon_s = max(float(segment_horizon_s), self.propagation_step_s * 2.0)
+        self.min_refresh_interval_s = max(float(min_refresh_interval_s), 0.0)
+        self.cache_path = Path(cache_path) if cache_path is not None else DEFAULT_TLE_CACHE_PATH
         self.cos_threshold = math.cos(math.radians(self.fov_half_angle_deg))
         self.debug_enabled = _env_flag("STARLINK_DEBUG_SKY")
         self._lock = threading.RLock()
@@ -302,8 +309,14 @@ class TleTracker:
         self._last_sgp4_error_logged_at: dict[str, float] = {}
         self.last_updated_at: Optional[str] = None
         self.last_error: Optional[str] = None
+        self.loaded_from_cache = False
+
+        self._load_cached_catalog(clear_error=False)
 
     def refresh(self) -> dict:
+        if self._should_skip_network_refresh():
+            return self.status()
+
         try:
             text = self._read_source(self.source)
             satellites = self._parse_catalog(text)
@@ -311,6 +324,8 @@ class TleTracker:
                 self._satellites = satellites
                 self.last_updated_at = datetime.now(timezone.utc).isoformat()
                 self.last_error = None
+                self.loaded_from_cache = False
+            self._write_cache(text)
             if self.debug_enabled:
                 logger.info(
                     "TLE refresh complete source=%s satellites=%d fov_half_angle_deg=%.1f step_s=%.1f horizon_s=%.1f",
@@ -322,9 +337,22 @@ class TleTracker:
                 )
             return self.status()
         except Exception as exc:
+            cache_updated_at = None
+            with self._lock:
+                has_catalog = bool(self._satellites)
+            if not has_catalog:
+                cache_updated_at = self._load_cached_catalog(clear_error=False)
             with self._lock:
                 self.last_error = str(exc)
-            logger.warning("TLE refresh failed source=%s error=%s", self.source, exc)
+            if cache_updated_at:
+                logger.warning(
+                    "TLE refresh failed source=%s error=%s using_cached_catalog_at=%s",
+                    self.source,
+                    exc,
+                    cache_updated_at,
+                )
+            else:
+                logger.warning("TLE refresh failed source=%s error=%s", self.source, exc)
             return self.status()
 
     def status(self) -> dict:
@@ -336,6 +364,7 @@ class TleTracker:
                 "updated_at": self.last_updated_at,
                 "fov_half_angle_deg": self.fov_half_angle_deg,
                 "propagation_step_s": self.propagation_step_s,
+                "loaded_from_cache": self.loaded_from_cache,
                 "error": self.last_error,
             }
 
@@ -540,12 +569,62 @@ class TleTracker:
 
     def _read_source(self, source: str) -> str:
         if source.startswith("http://") or source.startswith("https://"):
-            request = Request(source, headers={"User-Agent": "StarlinkMonitor/1.0"})
+            request = Request(
+                source,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; StarlinkMonitor/1.0; +https://celestrak.org/)",
+                    "Accept": "text/plain, */*",
+                },
+            )
             with urlopen(request, timeout=self.timeout_s) as response:
                 return response.read().decode("utf-8")
 
         with open(source, "r", encoding="utf-8") as handle:
             return handle.read()
+
+    def _should_skip_network_refresh(self) -> bool:
+        if self.min_refresh_interval_s <= 0:
+            return False
+
+        with self._lock:
+            if not self._satellites or not self.last_updated_at:
+                return False
+            try:
+                updated_at = datetime.fromisoformat(self.last_updated_at)
+            except ValueError:
+                return False
+
+        age_s = (datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc)).total_seconds()
+        return age_s < self.min_refresh_interval_s
+
+    def _load_cached_catalog(self, *, clear_error: bool) -> Optional[str]:
+        try:
+            if not self.cache_path.exists():
+                return None
+
+            text = self.cache_path.read_text(encoding="utf-8")
+            satellites = self._parse_catalog(text)
+            if not satellites:
+                return None
+
+            updated_at = datetime.fromtimestamp(self.cache_path.stat().st_mtime, tz=timezone.utc).isoformat()
+            with self._lock:
+                self._satellites = satellites
+                self.last_updated_at = updated_at
+                self.loaded_from_cache = True
+                if clear_error:
+                    self.last_error = None
+            return updated_at
+        except OSError as exc:
+            logger.warning("Unable to read cached TLE catalog path=%s error=%s", self.cache_path, exc)
+            return None
+
+    def _write_cache(self, text: str) -> None:
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self.cache_path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Unable to write cached TLE catalog path=%s error=%s", self.cache_path, exc)
 
     def _parse_catalog(self, text: str) -> List[TleSatellite]:
         lines = [line.strip() for line in text.splitlines() if line.strip()]

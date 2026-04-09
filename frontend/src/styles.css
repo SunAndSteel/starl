@@ -70,10 +70,7 @@ textarea {
 }
 
 .masthead {
-  display: grid;
-  grid-template-columns: 1fr minmax(260px, 320px);
-  gap: 18px;
-  align-items: start;
+  display: block;
   margin-bottom: 18px;
 }
 
@@ -173,67 +170,92 @@ h1 {
   color: var(--text);
 }
 
-.dashboard-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 18px;
-}
-
 .sky-card {
-  margin-bottom: 18px;
   padding: 18px;
-  border: 1px solid var(--panel-edge);
+  border: 0px solid var(--panel-edge);
   border-radius: 24px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0.01));
-  box-shadow: var(--shadow);
 }
 
-.sky-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+.sky-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 300px;
   gap: 18px;
+  align-items: start;
 }
 
-.sky-header h2 {
-  margin: 0;
-  font-size: clamp(1.4rem, 2vw, 2rem);
-  line-height: 1.05;
+.sky-sidebar {
+  display: grid;
+  gap: 14px;
 }
 
-.sky-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+.sky-main {
+  min-width: 0;
+}
+
+.control-card,
+.status-card {
+  padding: 16px;
+}
+
+.status-card .sky-footer {
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.status-card .sky-meta-right {
+  text-align: left;
+}
+
+.control-heading {
+  margin: 0 0 12px;
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.observer-fields,
+.action-stack,
+.layer-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.observer-fields {
+  margin-bottom: 10px
 }
 
 .observer-input {
-  min-width: 120px;
-  padding: 10px 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
   color: var(--text);
+  font-size: 0.88rem;
 }
 
-.sky-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 18px 0 16px;
+.ghost-button-compact {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 14px;
+  font-size: 0.84rem;
 }
 
 .layer-pill {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 12px;
+  width: 100%;
+  padding: 9px 11px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.025);
   color: rgba(255, 255, 255, 0.82);
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -244,7 +266,7 @@ h1 {
 
 .sky-stage {
   position: relative;
-  min-height: 520px;
+  min-height: 620px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 22px;
   background:
@@ -269,6 +291,34 @@ h1 {
 
 .sky-stage canvas.is-dragging {
   cursor: grabbing;
+}
+
+.sky-cardinals {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.sky-cardinal {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.58);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  transition: opacity 140ms ease;
 }
 
 .sky-footer {
@@ -541,7 +591,7 @@ canvas {
 .sidebar-card h2 {
   margin: 0 0 14px;
   color: rgba(255, 255, 255, 0.84);
-  font-size: 1rem;
+  font-size: 0.94rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -549,11 +599,11 @@ canvas {
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .metric {
-  padding: 12px;
+  padding: 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.02);
@@ -561,14 +611,14 @@ canvas {
 
 .metric-label {
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   color: rgba(255, 255, 255, 0.58);
-  font-size: 0.8rem;
+  font-size: 0.72rem;
 }
 
 .metric-value {
   color: var(--text);
-  font-size: 1.05rem;
+  font-size: 0.96rem;
   font-weight: 700;
 }
 
@@ -591,22 +641,23 @@ canvas {
 }
 
 @media (max-width: 1080px) {
-  .masthead,
-  .dashboard-shell {
+  .sky-layout {
     grid-template-columns: 1fr;
   }
 
-  .sky-header,
+  .sky-sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .sky-main {
+    order: -1;
+  }
+
   .sky-footer {
     grid-template-columns: 1fr;
-    display: grid;
   }
 
-  .sky-actions {
-    justify-content: flex-start;
-  }
-
-  .viewport-card {
-    min-height: 60vh;
+  .sky-stage {
+    min-height: 520px;
   }
 }

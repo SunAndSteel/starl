@@ -1,9 +1,18 @@
 import { defineConfig } from "vite";
 
+function parsePort(value, fallback) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const devHost = process.env.FRONTEND_HOST || "127.0.0.1";
+const devPort = parsePort(process.env.FRONTEND_PORT, 4173);
+
 export default defineConfig({
   server: {
-    host: "0.0.0.0",
-    port: 5173,
+    host: devHost,
+    port: devPort,
+    strictPort: false,
     proxy: {
       "/ws": {
         target: "ws://127.0.0.1:8000",

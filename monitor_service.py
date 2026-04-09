@@ -38,7 +38,7 @@ class MonitorConfig:
     poll_interval_s: float = float(os.getenv("STARLINK_POLL_INTERVAL", "1.0"))
     save_interval_s: float = float(os.getenv("STARLINK_SAVE_INTERVAL", "30.0"))
     location_refresh_s: float = float(os.getenv("STARLINK_LOCATION_REFRESH", "60.0"))
-    tle_refresh_s: float = float(os.getenv("STARLINK_TLE_REFRESH", "3600.0"))
+    tle_refresh_s: float = float(os.getenv("STARLINK_TLE_REFRESH", "7200.0"))
     tle_compute_interval_s: float = float(os.getenv("STARLINK_TLE_COMPUTE_INTERVAL", "1.0"))
     history_parse_samples: int = int(os.getenv("STARLINK_HISTORY_PARSE_SAMPLES", "8"))
     state_path: str = os.getenv(
