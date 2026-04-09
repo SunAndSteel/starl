@@ -288,6 +288,25 @@ function scaleVector(vector, radius) {
   ];
 }
 
+function isGridCellInsideProjection(x, y, projection) {
+  const dx = ((x + 0.5) - projection.centerX) / projection.radius;
+  const dy = (projection.centerY - (y + 0.5)) / projection.radius;
+  return ((dx * dx) + (dy * dy)) <= 1;
+}
+
+function createDishFovFilter(dish) {
+  if (!Number.isFinite(dish?.azimuth) || !Number.isFinite(dish?.elevation)) {
+    return null;
+  }
+  const halfAngle = Number(dish?.fov_half_angle_deg ?? 55);
+  const cosHalf = Math.cos((halfAngle * Math.PI) / 180);
+  const dishVec = azelToXYZ(dish.azimuth, dish.elevation);
+  return (azimuth, elevation) => {
+    const sampleVec = azelToXYZ(azimuth, elevation);
+    return ((sampleVec[0] * dishVec[0]) + (sampleVec[1] * dishVec[1]) + (sampleVec[2] * dishVec[2])) > cosHalf;
+  };
+}
+
 function parseUnixTimestampMs(value) {
   const seconds = Number(value);
   return Number.isFinite(seconds) ? seconds * 1000 : NaN;
@@ -638,7 +657,7 @@ function satelliteAnimationActive(now = Date.now()) {
   return false;
 }
 
-function buildGridPointLayer(grid, width, height, projection, radius, size, alphaFor) {
+function buildGridPointLayer(grid, width, height, projection, radius, size, alphaFor, inFov = null) {
   if (!grid?.length || !width || !height) {
     return EMPTY_FLOAT32;
   }
@@ -647,11 +666,17 @@ function buildGridPointLayer(grid, width, height, projection, radius, size, alph
   for (let y = 0; y < Math.min(height, grid.length); y += 1) {
     const row = grid[y];
     for (let x = 0; x < Math.min(width, row.length); x += 1) {
+      if (!isGridCellInsideProjection(x, y, projection)) {
+        continue;
+      }
       const value = Number(row[x]);
       if (!Number.isFinite(value) || value < 0) {
         continue;
       }
       const { azimuth, elevation } = gridCellToAzEl(x, y, projection);
+      if (inFov && !inFov(azimuth, elevation)) {
+        continue;
+      }
       const point = scaleVector(azelToXYZ(azimuth, elevation), radius);
       values.push(point[0], point[1], point[2], size, clamp(alphaFor(value), 0.015, 0.42));
     }
@@ -660,7 +685,7 @@ function buildGridPointLayer(grid, width, height, projection, radius, size, alph
   return values.length ? new Float32Array(values) : EMPTY_FLOAT32;
 }
 
-function buildMaskPointLayer(mask, width, height, projection, radius, size) {
+function buildMaskPointLayer(mask, width, height, projection, radius, size, inFov = null) {
   if (!mask?.length || !width || !height) {
     return EMPTY_FLOAT32;
   }
@@ -669,10 +694,16 @@ function buildMaskPointLayer(mask, width, height, projection, radius, size) {
   for (let y = 0; y < Math.min(height, mask.length); y += 1) {
     const row = mask[y];
     for (let x = 0; x < Math.min(width, row.length); x += 1) {
+      if (!isGridCellInsideProjection(x, y, projection)) {
+        continue;
+      }
       if (!row[x]) {
         continue;
       }
       const { azimuth, elevation } = gridCellToAzEl(x, y, projection);
+      if (inFov && !inFov(azimuth, elevation)) {
+        continue;
+      }
       const point = scaleVector(azelToXYZ(azimuth, elevation), radius);
       values.push(point[0], point[1], point[2], size, 0.24);
     }
@@ -784,31 +815,32 @@ function buildSkyScene(snapshot, projection, active, now) {
   const dish = sky.dish || {};
   const clusters = sky.persistent_obstructions?.clusters || [];
   const cellRadius = width && height ? clamp(920 / Math.max(width, height), 2.2, 7.5) : 4.5;
+  const inDishFov = createDishFovFilter(dish);
   const satellites = active.live ? animatedLiveSatellites(now) : [];
 
   return {
     layers: [
       {
         points: active.average
-          ? buildGridPointLayer(layers.average, width, height, projection, GRID_LAYER_RADII.average, cellRadius, (value) => 0.02 + (1 - value) * 0.22)
+          ? buildGridPointLayer(layers.average, width, height, projection, GRID_LAYER_RADII.average, cellRadius, (value) => 0.02 + (1 - value) * 0.22, inDishFov)
           : EMPTY_FLOAT32,
         color: [1, 1, 1],
       },
       {
         points: active.current
-          ? buildGridPointLayer(layers.current, width, height, projection, GRID_LAYER_RADII.current, cellRadius, (value) => 0.03 + (1 - value) * 0.28)
+          ? buildGridPointLayer(layers.current, width, height, projection, GRID_LAYER_RADII.current, cellRadius, (value) => 0.03 + (1 - value) * 0.28, inDishFov)
           : EMPTY_FLOAT32,
         color: [1, 1, 1],
       },
       {
         points: active.mask
-          ? buildMaskPointLayer(layers.persistent_mask, width, height, projection, GRID_LAYER_RADII.mask, cellRadius + 1)
+          ? buildMaskPointLayer(layers.persistent_mask, width, height, projection, GRID_LAYER_RADII.mask, cellRadius + 1, inDishFov)
           : EMPTY_FLOAT32,
         color: [1, 1, 1],
       },
       {
         points: active.tracks
-          ? buildGridPointLayer(layers.satellite_tracks, width, height, projection, GRID_LAYER_RADII.tracks, Math.max(1.8, cellRadius * 0.64), (value) => 0.08 + value * 0.35)
+          ? buildGridPointLayer(layers.satellite_tracks, width, height, projection, GRID_LAYER_RADII.tracks, Math.max(1.8, cellRadius * 0.64), (value) => 0.08 + value * 0.35, inDishFov)
           : EMPTY_FLOAT32,
         color: [1, 1, 1],
       },
@@ -1174,9 +1206,10 @@ socket.start();
 
 function frame() {
   const now = Date.now();
-  const animateSky = state.snapshot && (
+  const cameraChanged = !!skyRenderer?.tick?.();
+  const animateSky = !!state.snapshot && (
     satelliteAnimationActive(now)
-    || !!skyRenderer?.tick?.()
+    || cameraChanged
   );
   if (animateSky) {
     renderSkyView(state.snapshot, now);
